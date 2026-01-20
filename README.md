@@ -19,11 +19,8 @@ All with `thinking: medium`.
 ## Installation
 
 ```bash
-# Clone the repo
-git clone <your-repo-url> ~/pi-extensions
-
-# Symlink extension
-ln -sf ~/pi-extensions/quick-model-picker ~/.pi/agent/extensions/quick-model-picker
+# Clone directly into pi extensions folder
+git clone <your-repo-url> ~/.pi/agent/extensions/quick-model-picker
 
 # Restart pi
 ```
