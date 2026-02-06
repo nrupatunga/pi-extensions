@@ -5,12 +5,13 @@ export default function (pi: ExtensionAPI) {
   const models = [
     { label: "Sonnet", provider: "anthropic", model: "claude-sonnet-4-20250514", thinking: "medium" },
     { label: "Opus 4.5", provider: "anthropic", model: "claude-opus-4-5", thinking: "medium" },
-    { label: "Haiku", provider: "anthropic", model: "claude-haiku-4-5", thinking: "medium" },
+    { label: "Opus 4.6", provider: "anthropic", model: "claude-opus-4-6", thinking: "medium" },
     { label: "GPT-5.2", provider: "openai-codex", model: "gpt-5.2", thinking: "medium" },
+    { label: "Codex 5.3", provider: "openai-codex", model: "gpt-5.3-codex", thinking: "medium" },
   ];
 
-  pi.registerShortcut("ctrl+q", {
-    description: "Cycle through 4 models",
+  pi.registerShortcut("ctrl+space", {
+    description: `Cycle through ${models.length} models`,
     handler: async (ctx) => {
       // Get current model from model registry
       const currentModel = ctx.model;
