@@ -18,6 +18,19 @@ All with `thinking: medium`.
 
 ## Installation
 
+### Option 1: Direct Copy (Recommended)
+
+Simply copy the `quick-model-picker.ts` file directly to your pi extensions folder:
+
+```bash
+# Copy the file directly
+cp quick-model-picker/quick-model-picker.ts ~/.pi/agent/extensions/
+
+# Restart pi
+```
+
+### Option 2: Git Clone
+
 ```bash
 # Clone directly into pi extensions folder
 git clone <your-repo-url> ~/.pi/agent/extensions/quick-model-picker
@@ -27,7 +40,7 @@ git clone <your-repo-url> ~/.pi/agent/extensions/quick-model-picker
 
 ## Customization
 
-Edit `quick-model-picker/index.ts` to:
+Edit `quick-model-picker/quick-model-picker.ts` to:
 - Add/remove models
 - Change thinking levels
 - Change the shortcut key
