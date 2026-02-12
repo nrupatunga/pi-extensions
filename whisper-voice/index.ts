@@ -1,11 +1,13 @@
 /**
  * Whisper Voice Input — minimal pi plugin
  *
- * /voice  or  Alt+V  →  record  →  Enter to stop  →  transcribe  →  auto-submit
+ * Alt+V → starts recording (status bar shows blinking dot)
+ * Enter → stops recording → transcribes → auto-submits
+ * Normal prompt stays untouched.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { spawn, execSync } from "node:child_process";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,8 +19,6 @@ const WHISPER_MODEL = "whisper-1";
 async function transcribe(audioPath: string): Promise<string> {
 	const key = process.env.OPENAI_API_KEY!;
 	const boundary = `--B${Date.now()}`;
-
-	// Whisper prompt guides transcription style — fewer fillers, concise
 	const whisperPrompt = "Concise technical instruction. No filler words.";
 
 	const field = (name: string, value: string) =>
@@ -60,56 +60,90 @@ function toMp3(wav: string, mp3: string): string {
 }
 
 export default function (pi: ExtensionAPI) {
-	async function voice(ctx: any) {
-		if (!process.env.OPENAI_API_KEY) {
-			ctx.ui.notify("OPENAI_API_KEY not set", "error");
-			return;
-		}
+	let recording = false;
+	let recProc: ChildProcess | null = null;
+	let tmpDir: string | null = null;
+	let animTimer: ReturnType<typeof setInterval> | null = null;
+	let statusCtx: any = null;
 
-		const tmp = mkdtempSync(join(tmpdir(), "piv-"));
+	// Intercept Enter while recording
+	pi.on("input", async (event, ctx) => {
+		if (!recording) return { action: "continue" as const };
+
+		// Stop recording, handle transcription
+		recording = false;
+		if (animTimer) { clearInterval(animTimer); animTimer = null; }
+		recProc?.kill("SIGTERM");
+		await new Promise((r) => setTimeout(r, 400));
+
+		const tmp = tmpDir!;
 		const wav = join(tmp, "rec.wav");
 		const mp3 = join(tmp, "rec.mp3");
+		tmpDir = null;
+		recProc = null;
 
 		try {
-			// Record
-			ctx.ui.setStatus("voice", "● REC (Enter to stop)");
-			const rec = spawn("parecord", [
-				"--format=s16le", "--rate=16000", "--channels=1", "--file-format=wav", wav,
-			], { stdio: "ignore" });
-
-			await ctx.ui.input("● REC - press Enter to stop");
-			rec.kill("SIGTERM");
-			await new Promise((r) => setTimeout(r, 400));
-
 			if (!existsSync(wav)) {
 				ctx.ui.notify("No audio recorded", "error");
-				return;
+				return { action: "handled" as const };
 			}
 
-			// Transcribe
-			ctx.ui.setStatus("voice", "● Transcribing...");
+			ctx.ui.setEditorText("● Transcribing...");
 			const text = await transcribe(toMp3(wav, mp3));
 
 			if (!text) {
 				ctx.ui.notify("Empty transcription", "warning");
 			} else {
+				// Show in editor first, then submit after a brief pause
+				ctx.ui.setEditorText(text);
+				await new Promise((r) => setTimeout(r, 250));
+				ctx.ui.setEditorText("");
 				pi.sendUserMessage(text);
 			}
 		} catch (e: any) {
 			ctx.ui.notify(e.message, "error");
 		} finally {
 			ctx.ui.setStatus("voice", undefined);
+			ctx.ui.setEditorText("");
 			rmSync(tmp, { recursive: true, force: true });
 		}
+
+		return { action: "handled" as const };
+	});
+
+	function startRecording(ctx: any) {
+		if (recording) return;
+		if (!process.env.OPENAI_API_KEY) {
+			ctx.ui.notify("OPENAI_API_KEY not set", "error");
+			return;
+		}
+
+		statusCtx = ctx;
+		tmpDir = mkdtempSync(join(tmpdir(), "piv-"));
+		const wav = join(tmpDir, "rec.wav");
+
+		recProc = spawn("parecord", [
+			"--format=s16le", "--rate=16000", "--channels=1", "--file-format=wav", wav,
+		], { stdio: "ignore" });
+
+		recording = true;
+
+		const dots = ["●", "○"];
+		let tick = 0;
+		ctx.ui.setEditorText("● REC (Enter to stop)");
+		animTimer = setInterval(() => {
+			ctx.ui.setEditorText(`${dots[tick % 2]} REC (Enter to stop)`);
+			tick++;
+		}, 350);
 	}
 
 	pi.registerCommand("voice", {
-		description: "Voice -> Whisper -> auto-submit",
-		handler: (_, ctx) => voice(ctx),
+		description: "Start voice recording",
+		handler: (_, ctx) => startRecording(ctx),
 	});
 
 	pi.registerShortcut("alt+v", {
 		description: "Voice input",
-		handler: (ctx) => voice(ctx),
+		handler: (ctx) => startRecording(ctx),
 	});
 }
