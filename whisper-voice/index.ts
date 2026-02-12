@@ -1,9 +1,10 @@
 /**
  * Whisper Voice Input — minimal pi plugin
  *
- * Alt+V → starts recording (status bar shows blinking dot)
- * Enter → stops recording → transcribes → auto-submits
- * Normal prompt stays untouched.
+ * Alt+V → starts recording (blinking dot in status bar)
+ * Enter → stops recording → transcribes → auto-submits (with any attachments)
+ *
+ * Editor is NEVER touched during recording — attachments and text are preserved.
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
@@ -64,13 +65,16 @@ export default function (pi: ExtensionAPI) {
 	let recProc: ChildProcess | null = null;
 	let tmpDir: string | null = null;
 	let animTimer: ReturnType<typeof setInterval> | null = null;
-	let statusCtx: any = null;
+	let savedEditorText: string = "";
 
 	// Intercept Enter while recording
 	pi.on("input", async (event, ctx) => {
 		if (!recording) return { action: "continue" as const };
 
-		// Stop recording, handle transcription
+		// Capture images and original editor text
+		const images = event.images?.length ? [...event.images] : null;
+
+		// Stop recording
 		recording = false;
 		if (animTimer) { clearInterval(animTimer); animTimer = null; }
 		recProc?.kill("SIGTERM");
@@ -79,8 +83,10 @@ export default function (pi: ExtensionAPI) {
 		const tmp = tmpDir!;
 		const wav = join(tmp, "rec.wav");
 		const mp3 = join(tmp, "rec.mp3");
+		const origText = savedEditorText;
 		tmpDir = null;
 		recProc = null;
+		savedEditorText = "";
 
 		try {
 			if (!existsSync(wav)) {
@@ -88,23 +94,33 @@ export default function (pi: ExtensionAPI) {
 				return { action: "handled" as const };
 			}
 
-			ctx.ui.setEditorText("● Transcribing...");
+			ctx.ui.setStatus("voice", "● Transcribing...");
 			const text = await transcribe(toMp3(wav, mp3));
 
 			if (!text) {
 				ctx.ui.notify("Empty transcription", "warning");
 			} else {
-				// Show in editor first, then submit after a brief pause
-				ctx.ui.setEditorText(text);
+				// Combine: original editor text + transcribed voice
+				const fullText = origText ? `${origText} ${text}` : text;
+
+				// Brief flash in editor
+				ctx.ui.setEditorText(fullText);
 				await new Promise((r) => setTimeout(r, 250));
 				ctx.ui.setEditorText("");
-				pi.sendUserMessage(text);
+
+				// Submit with images if any
+				if (images?.length) {
+					const content: any[] = [{ type: "text", text: fullText }];
+					content.push(...images);
+					pi.sendUserMessage(content);
+				} else {
+					pi.sendUserMessage(fullText);
+				}
 			}
 		} catch (e: any) {
 			ctx.ui.notify(e.message, "error");
 		} finally {
 			ctx.ui.setStatus("voice", undefined);
-			ctx.ui.setEditorText("");
 			rmSync(tmp, { recursive: true, force: true });
 		}
 
@@ -118,7 +134,9 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		statusCtx = ctx;
+		// Save whatever text is in the editor
+		savedEditorText = (ctx.ui.getEditorText?.() || "").trim();
+
 		tmpDir = mkdtempSync(join(tmpdir(), "piv-"));
 		const wav = join(tmpDir, "rec.wav");
 
@@ -130,15 +148,26 @@ export default function (pi: ExtensionAPI) {
 
 		const dots = ["●", "○"];
 		let tick = 0;
-		ctx.ui.setEditorText("● REC (Enter to stop)");
-		animTimer = setInterval(() => {
-			ctx.ui.setEditorText(`${dots[tick % 2]} REC (Enter to stop)`);
-			tick++;
-		}, 350);
+
+		if (!savedEditorText) {
+			// Empty editor — animate in prompt
+			ctx.ui.setEditorText("● REC (Enter to stop)");
+			animTimer = setInterval(() => {
+				ctx.ui.setEditorText(`${dots[tick % 2]} REC (Enter to stop)`);
+				tick++;
+			}, 350);
+		} else {
+			// Has content/attachments — animate in status bar only
+			ctx.ui.setStatus("voice", "● REC (Enter to stop)");
+			animTimer = setInterval(() => {
+				ctx.ui.setStatus("voice", `${dots[tick % 2]} REC (Enter to stop)`);
+				tick++;
+			}, 350);
+		}
 	}
 
 	pi.registerCommand("voice", {
-		description: "Start voice recording",
+		description: "Voice -> Whisper -> auto-submit",
 		handler: (_, ctx) => startRecording(ctx),
 	});
 
