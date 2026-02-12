@@ -140,16 +140,24 @@ export default function (pi: ExtensionAPI) {
 		tmpDir = mkdtempSync(join(tmpdir(), "piv-"));
 		const wav = join(tmpDir, "rec.wav");
 
-		// Find a working input mic (skip monitors, prefer non-default if default fails)
+		// Pick mic: WHISPER_MIC env var > first non-default input source > default
 		const recArgs = ["--format=s16le", "--rate=16000", "--channels=1", "--file-format=wav"];
-		try {
-			const sources = execSync("pactl list sources short", { encoding: "utf8" });
-			const inputs = sources.split("\n").filter((l) => l.includes("input") && !l.includes("monitor"));
-			if (inputs.length > 0) {
-				const device = inputs[0].split("\t")[1];
-				recArgs.unshift(`--device=${device}`);
-			}
-		} catch {}
+		const envMic = process.env.WHISPER_MIC;
+		if (envMic) {
+			recArgs.unshift(`--device=${envMic}`);
+		} else {
+			try {
+				const defaultSrc = execSync("pactl get-default-source", { encoding: "utf8" }).trim();
+				const sources = execSync("pactl list sources short", { encoding: "utf8" });
+				const inputs = sources.split("\n")
+					.filter((l) => l.includes("input") && !l.includes("monitor"))
+					.map((l) => l.split("\t")[1]);
+				// Prefer a non-default input (default may be grabbed by screen recorder etc.)
+				const alt = inputs.find((d) => d !== defaultSrc);
+				const device = alt || inputs[0];
+				if (device) recArgs.unshift(`--device=${device}`);
+			} catch {}
+		}
 		recArgs.push(wav);
 
 		recProc = spawn("parecord", recArgs, { stdio: "ignore" });
