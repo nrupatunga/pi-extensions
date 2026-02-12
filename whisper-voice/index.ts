@@ -140,9 +140,19 @@ export default function (pi: ExtensionAPI) {
 		tmpDir = mkdtempSync(join(tmpdir(), "piv-"));
 		const wav = join(tmpDir, "rec.wav");
 
-		recProc = spawn("parecord", [
-			"--format=s16le", "--rate=16000", "--channels=1", "--file-format=wav", wav,
-		], { stdio: "ignore" });
+		// Find a working mic — prefer FIFINE, fallback to default
+		const recArgs = ["--format=s16le", "--rate=16000", "--channels=1", "--file-format=wav"];
+		try {
+			const sources = execSync("pactl list sources short", { encoding: "utf8" });
+			const fifine = sources.split("\n").find((l) => l.includes("FIFINE") && l.includes("input"));
+			if (fifine) {
+				const device = fifine.split("\t")[1];
+				recArgs.unshift(`--device=${device}`);
+			}
+		} catch {}
+		recArgs.push(wav);
+
+		recProc = spawn("parecord", recArgs, { stdio: "ignore" });
 
 		recording = true;
 
