@@ -140,13 +140,13 @@ export default function (pi: ExtensionAPI) {
 		tmpDir = mkdtempSync(join(tmpdir(), "piv-"));
 		const wav = join(tmpDir, "rec.wav");
 
-		// Find a working mic — prefer FIFINE, fallback to default
+		// Find a working input mic (skip monitors, prefer non-default if default fails)
 		const recArgs = ["--format=s16le", "--rate=16000", "--channels=1", "--file-format=wav"];
 		try {
 			const sources = execSync("pactl list sources short", { encoding: "utf8" });
-			const fifine = sources.split("\n").find((l) => l.includes("FIFINE") && l.includes("input"));
-			if (fifine) {
-				const device = fifine.split("\t")[1];
+			const inputs = sources.split("\n").filter((l) => l.includes("input") && !l.includes("monitor"));
+			if (inputs.length > 0) {
+				const device = inputs[0].split("\t")[1];
 				recArgs.unshift(`--device=${device}`);
 			}
 		} catch {}
