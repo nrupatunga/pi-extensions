@@ -131,25 +131,37 @@ export default function (pi: ExtensionAPI) {
 		recProc = null;
 		savedEditorText = "";
 
+		let transcribingTimer: ReturnType<typeof setInterval> | null = null;
 		try {
 			if (!existsSync(wav)) {
 				ctx.ui.notify("No audio recorded", "error");
 				return { action: "handled" as const };
 			}
 
-			ctx.ui.setStatus("voice", "● Transcribing...");
+			const frames = ["⏳ Transcribing   ", "⏳ Transcribing.  ", "⏳ Transcribing.. ", "⏳ Transcribing..."];
+			let f = 0;
+			ctx.ui.setEditorText(frames[0]);
+			transcribingTimer = setInterval(() => {
+				ctx.ui.setEditorText(frames[f % frames.length]);
+				f++;
+			}, 180);
+
 			const text = await transcribe(toMp3(wav, mp3));
+			if (transcribingTimer) {
+				clearInterval(transcribingTimer);
+				transcribingTimer = null;
+			}
 
 			if (!text) {
+				ctx.ui.setEditorText(origText || "");
 				ctx.ui.notify("Empty transcription", "warning");
 			} else {
 				// Combine: original editor text + transcribed voice
 				const fullText = origText ? `${origText} ${text}` : text;
 
-				// Brief flash in editor
+				// Replace transcribing animation with recognized text
 				ctx.ui.setEditorText(fullText);
-				await new Promise((r) => setTimeout(r, 250));
-				ctx.ui.setEditorText("");
+				await new Promise((r) => setTimeout(r, 300));
 
 				// Submit with images if any
 				if (images?.length) {
@@ -159,12 +171,14 @@ export default function (pi: ExtensionAPI) {
 				} else {
 					pi.sendUserMessage(fullText);
 				}
+				ctx.ui.setEditorText("");
 			}
 		} catch (e: any) {
+			if (transcribingTimer) clearInterval(transcribingTimer);
+			ctx.ui.setEditorText(origText || "");
 			ctx.ui.notify(e.message, "error");
 		} finally {
 			ctx.ui.setStatus("voice", undefined);
-			ctx.ui.setStatus("voice-mic", undefined);
 			rmSync(tmp, { recursive: true, force: true });
 		}
 
@@ -186,6 +200,7 @@ export default function (pi: ExtensionAPI) {
 
 		// Pick mic: WHISPER_MIC (exact or substring) > default source > bluetooth source > first source
 		const recArgs = ["--format=s16le", "--rate=16000", "--channels=1", "--file-format=wav"];
+		let selectedMicLabel = "default";
 		try {
 			const mics = getMicInfos();
 			const inputs = mics.map((m) => m.name);
@@ -207,11 +222,11 @@ export default function (pi: ExtensionAPI) {
 
 			if (device) {
 				recArgs.unshift(`--device=${device}`);
-				const label = mics.find((m) => m.name === device)?.description || device;
-				ctx.ui.setStatus("voice-mic", `Mic: ${label}`);
+				selectedMicLabel = mics.find((m) => m.name === device)?.description || device;
 			}
 		} catch {}
 		recArgs.push(wav);
+		ctx.ui.notify(`Using mic: ${selectedMicLabel}`, "info");
 
 		recProc = spawn("parecord", recArgs, { stdio: "ignore" });
 
