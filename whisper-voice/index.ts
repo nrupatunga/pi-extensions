@@ -60,6 +60,49 @@ function toMp3(wav: string, mp3: string): string {
 	return wav;
 }
 
+type MicInfo = { name: string; description: string };
+
+function getMicInfos(): MicInfo[] {
+	try {
+		const raw = execSync("pactl list sources", { encoding: "utf8" });
+		const lines = raw.split("\n");
+		const out: MicInfo[] = [];
+		let name = "";
+		let description = "";
+
+		const flush = () => {
+			if (!name || name.includes("monitor")) {
+				name = "";
+				description = "";
+				return;
+			}
+			out.push({ name, description: description || name });
+			name = "";
+			description = "";
+		};
+
+		for (const line of lines) {
+			const t = line.trim();
+			if (t.startsWith("Source #")) {
+				flush();
+				continue;
+			}
+			if (t.startsWith("Name:")) {
+				name = t.slice("Name:".length).trim();
+				continue;
+			}
+			if (t.startsWith("Description:")) {
+				description = t.slice("Description:".length).trim();
+				continue;
+			}
+		}
+		flush();
+		return out;
+	} catch {
+		return [];
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	let recording = false;
 	let recProc: ChildProcess | null = null;
@@ -121,6 +164,7 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(e.message, "error");
 		} finally {
 			ctx.ui.setStatus("voice", undefined);
+			ctx.ui.setStatus("voice-mic", undefined);
 			rmSync(tmp, { recursive: true, force: true });
 		}
 
@@ -140,24 +184,33 @@ export default function (pi: ExtensionAPI) {
 		tmpDir = mkdtempSync(join(tmpdir(), "piv-"));
 		const wav = join(tmpDir, "rec.wav");
 
-		// Pick mic: WHISPER_MIC env var > first non-default input source > default
+		// Pick mic: WHISPER_MIC (exact or substring) > default source > bluetooth source > first source
 		const recArgs = ["--format=s16le", "--rate=16000", "--channels=1", "--file-format=wav"];
-		const envMic = process.env.WHISPER_MIC;
-		if (envMic) {
-			recArgs.unshift(`--device=${envMic}`);
-		} else {
-			try {
-				const defaultSrc = execSync("pactl get-default-source", { encoding: "utf8" }).trim();
-				const sources = execSync("pactl list sources short", { encoding: "utf8" });
-				const inputs = sources.split("\n")
-					.filter((l) => l.includes("input") && !l.includes("monitor"))
-					.map((l) => l.split("\t")[1]);
-				// Prefer a non-default input (default may be grabbed by screen recorder etc.)
-				const alt = inputs.find((d) => d !== defaultSrc);
-				const device = alt || inputs[0];
-				if (device) recArgs.unshift(`--device=${device}`);
-			} catch {}
-		}
+		try {
+			const mics = getMicInfos();
+			const inputs = mics.map((m) => m.name);
+			const defaultSrc = execSync("pactl get-default-source", { encoding: "utf8" }).trim();
+			const envMicRaw = (process.env.WHISPER_MIC || "").trim();
+			const envMic = envMicRaw.toLowerCase();
+
+			let device: string | undefined;
+			if (envMic) {
+				device =
+					inputs.find((d) => d === envMicRaw) ||
+					inputs.find((d) => d.toLowerCase().includes(envMic)) ||
+					mics.find((m) => m.description.toLowerCase().includes(envMic))?.name;
+			}
+
+			if (!device && inputs.includes(defaultSrc)) device = defaultSrc;
+			if (!device) device = inputs.find((d) => d.includes("bluez_source") || d.includes("bluez_input"));
+			if (!device) device = inputs[0];
+
+			if (device) {
+				recArgs.unshift(`--device=${device}`);
+				const label = mics.find((m) => m.name === device)?.description || device;
+				ctx.ui.setStatus("voice-mic", `Mic: ${label}`);
+			}
+		} catch {}
 		recArgs.push(wav);
 
 		recProc = spawn("parecord", recArgs, { stdio: "ignore" });
@@ -187,6 +240,21 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("voice", {
 		description: "Voice -> Whisper -> auto-submit",
 		handler: (_, ctx) => startRecording(ctx),
+	});
+
+	pi.registerCommand("voice-mics", {
+		description: "Show available microphone names (friendly + internal)",
+		handler: (_, ctx) => {
+			const mics = getMicInfos();
+			if (!mics.length) {
+				ctx.ui.notify("No microphones detected", "warning");
+				return;
+			}
+			let def = "";
+			try { def = execSync("pactl get-default-source", { encoding: "utf8" }).trim(); } catch {}
+			const rows = mics.map((m) => `${m.name === def ? "*" : " "} ${m.description}  [${m.name}]`);
+			ctx.ui.notify(`Mics:\n${rows.join("\n")}`, "info");
+		},
 	});
 
 	pi.registerShortcut("alt+v", {
