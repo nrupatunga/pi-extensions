@@ -15,6 +15,7 @@ My collection of extensions for [pi](https://github.com/badlogic/pi-mono), the c
 | **cwd-history** | Seeds editor history with recent prompts from same working directory | Automatic |
 | **files** | Lists all files read/written/edited in the session, open in VS Code | `/files` |
 | **new-with-name** | Start a new session with a name in one command | `/n my-session` |
+| **go-to-bed** | Late-night guardrail that nudges sleep and gates tool use during quiet hours | Automatic (quiet hours) |
 | **whimsical** | Fun random working messages while the agent is thinking | Automatic |
 
 ## Setup
