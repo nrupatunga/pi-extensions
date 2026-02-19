@@ -721,6 +721,107 @@ class ModePromptEditor extends CustomEditor {
 	}
 }
 
+// =============================================================================
+// Prompt history — ported from cwd-history.ts (by pasky/pi-amplike)
+//
+// Seeds the editor with ↑/↓ prompt history from previous sessions in the same
+// working directory. Integrated here because only the editor owner (via
+// setEditorComponent) can call editor.addToHistory(). Kept as a self-contained
+// section so the logic remains separable.
+// =============================================================================
+
+const HIST_MAX_ENTRIES = 100;
+const HIST_MAX_RECENT = 30;
+
+interface HistPromptEntry { text: string; timestamp: number; }
+
+function histExtractText(content: Array<{ type: string; text?: string }>): string {
+	return content.filter((c) => c.type === "text" && typeof c.text === "string").map((c) => c.text ?? "").join("").trim();
+}
+
+function histCollectPrompts(entries: Array<any>): HistPromptEntry[] {
+	const out: HistPromptEntry[] = [];
+	for (const e of entries) {
+		if (e?.type !== "message") continue;
+		const m = e?.message;
+		if (!m || m.role !== "user" || !Array.isArray(m.content)) continue;
+		const text = histExtractText(m.content);
+		if (!text) continue;
+		out.push({ text, timestamp: Number(m.timestamp ?? e.timestamp ?? Date.now()) });
+	}
+	return out;
+}
+
+function histSessionDir(cwd: string): string {
+	const safe = `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+	return path.join(os.homedir(), ".pi", "agent", "sessions", safe);
+}
+
+async function histReadTail(filePath: string, maxBytes = 256 * 1024): Promise<string> {
+	let fh: Awaited<ReturnType<typeof fs.open>> | undefined;
+	try {
+		const { size } = await fs.stat(filePath);
+		const start = Math.max(0, size - maxBytes);
+		const len = size - start;
+		if (len <= 0) return "";
+		const buf = Buffer.alloc(len);
+		fh = await fs.open(filePath, "r");
+		const { bytesRead } = await fh.read(buf, 0, len, start);
+		if (!bytesRead) return "";
+		let chunk = buf.subarray(0, bytesRead).toString("utf8");
+		if (start > 0) { const nl = chunk.indexOf("\n"); if (nl !== -1) chunk = chunk.slice(nl + 1); }
+		return chunk;
+	} catch { return ""; } finally { await fh?.close(); }
+}
+
+async function histLoadForCwd(cwd: string, exclude?: string): Promise<HistPromptEntry[]> {
+	const dir = histSessionDir(path.resolve(cwd));
+	const excl = exclude ? path.resolve(exclude) : undefined;
+	const out: HistPromptEntry[] = [];
+	let dirents: Awaited<ReturnType<typeof fs.readdir>> = [];
+	try { dirents = await fs.readdir(dir, { withFileTypes: true }); } catch { return out; }
+
+	const files = (await Promise.all(
+		(dirents as any[]).filter((d: any) => d.isFile() && d.name.endsWith(".jsonl")).map(async (d: any) => {
+			const fp = path.join(dir, d.name);
+			try { return { filePath: fp, mtimeMs: (await fs.stat(fp)).mtimeMs }; } catch { return undefined; }
+		})
+	)).filter((f): f is { filePath: string; mtimeMs: number } => Boolean(f)).sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+	for (const f of files) {
+		if (excl && path.resolve(f.filePath) === excl) continue;
+		const tail = await histReadTail(f.filePath);
+		if (!tail) continue;
+		for (const line of tail.split("\n").filter(Boolean)) {
+			let entry: any;
+			try { entry = JSON.parse(line); } catch { continue; }
+			if (entry?.type !== "message") continue;
+			const m = entry?.message;
+			if (!m || m.role !== "user" || !Array.isArray(m.content)) continue;
+			const text = histExtractText(m.content);
+			if (!text) continue;
+			out.push({ text, timestamp: Number(m.timestamp ?? entry.timestamp ?? Date.now()) });
+			if (out.length >= HIST_MAX_RECENT) break;
+		}
+		if (out.length >= HIST_MAX_RECENT) break;
+	}
+	return out;
+}
+
+function histBuild(current: HistPromptEntry[], previous: HistPromptEntry[]): HistPromptEntry[] {
+	const all = [...current, ...previous].sort((a, b) => a.timestamp - b.timestamp);
+	const seen = new Set<string>();
+	const deduped: HistPromptEntry[] = [];
+	for (const p of all) { const k = `${p.timestamp}:${p.text}`; if (seen.has(k)) continue; seen.add(k); deduped.push(p); }
+	return deduped.slice(-HIST_MAX_ENTRIES);
+}
+
+let histLoadCounter = 0;
+
+// =============================================================================
+// Editor: mode label + prompt history
+// =============================================================================
+
 function applyEditor(pi: ExtensionAPI, ctx: ExtensionContext): void {
 	if (!ctx.hasUI) return;
 
@@ -755,6 +856,22 @@ function applyEditor(pi: ExtensionAPI, ctx: ExtensionContext): void {
 
 		editor.borderColor = borderColor;
 		editor.lockBorderColor();
+
+		// Seed prompt history (↑/↓ in editor)
+		const sessionFile = ctx.sessionManager.getSessionFile();
+		const currentPrompts = histCollectPrompts(ctx.sessionManager.getBranch());
+		const immediate = histBuild(currentPrompts, []);
+		for (const p of immediate) editor.addToHistory?.(p.text);
+
+		const loadId = ++histLoadCounter;
+		void (async () => {
+			const prev = await histLoadForCwd(ctx.cwd, sessionFile ?? undefined);
+			if (loadId !== histLoadCounter) return;
+			const full = histBuild(currentPrompts, prev);
+			if (full.length === immediate.length) return;
+			for (const p of full) editor.addToHistory?.(p.text);
+		})();
+
 		return editor;
 	});
 
