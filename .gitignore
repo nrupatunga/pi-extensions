@@ -1,5 +1,9 @@
-node_modules/
-*.js
-*.d.ts
-*.map
-.DS_Store
+auth.json
+sessions/
+agents/
+bin/
+messenger/
+.pi/
+modes.json
+settings.json
+themes/
