@@ -21,13 +21,16 @@ async function transcribe(audioPath: string): Promise<string> {
 	const key = process.env.OPENAI_API_KEY!;
 	const boundary = `--B${Date.now()}`;
 	const whisperPrompt = "Concise technical instruction. No filler words.";
+	const isWav = audioPath.endsWith(".wav");
+	const filename = isWav ? "audio.wav" : "audio.mp3";
+	const contentType = isWav ? "audio/wav" : "audio/mpeg";
 
 	const field = (name: string, value: string) =>
 		`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`;
 
 	const body = Buffer.concat([
 		Buffer.from(
-			`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.mp3"\r\nContent-Type: audio/mpeg\r\n\r\n`
+			`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${contentType}\r\n\r\n`
 		),
 		await readFile(audioPath),
 		Buffer.from(
